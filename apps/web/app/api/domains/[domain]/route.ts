@@ -2,13 +2,14 @@ import {
   addDomainToVercel,
   deleteDomainAndLinks,
   removeDomainFromVercel,
-  setRootDomain,
   validateDomain,
 } from "@/lib/api/domains";
 import { DubApiError } from "@/lib/api/errors";
 import { parseRequestBody } from "@/lib/api/utils";
 import { withWorkspace } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { recordLink } from "@/lib/tinybird";
+import { redis } from "@/lib/upstash";
 import {
   DomainSchema,
   updateDomainBodySchema,
@@ -16,34 +17,17 @@ import {
 import { waitUntil } from "@vercel/functions";
 import { NextResponse } from "next/server";
 
-// GET /api/domains/[domain] – get a workspace's domain
+// GET /api/domains/[domain] – get a workspace's domain
 export const GET = withWorkspace(
-  async ({ domain }) => {
-    const data = await prisma.domain.findUnique({
+  async ({ domain, workspace }) => {
+    const domainRecord = await prisma.domain.findUnique({
       where: {
         slug: domain,
-      },
-      select: {
-        slug: true,
-        verified: true,
-        primary: true,
-        target: true,
-        type: true,
-        placeholder: true,
-        clicks: true,
-        expiredUrl: true,
+        projectId: workspace.id,
       },
     });
-    if (!data) {
-      throw new DubApiError({
-        code: "not_found",
-        message: "Domain not found",
-      });
-    }
-    return NextResponse.json({
-      ...data,
-      url: data.target,
-    });
+
+    return NextResponse.json(DomainSchema.parse(domainRecord));
   },
   {
     domainChecks: true,
@@ -54,22 +38,27 @@ export const GET = withWorkspace(
 export const PATCH = withWorkspace(
   async ({ req, workspace, domain }) => {
     const body = await parseRequestBody(req);
-    const {
-      slug: newDomain,
-      target,
-      type,
-      placeholder,
-      expiredUrl,
-      archived,
-      noindex,
-    } = updateDomainBodySchema.parse(body);
+    const payload = updateDomainBodySchema.parse(body);
 
-    if (newDomain && newDomain !== domain) {
+    const { slug: newDomain, placeholder, expiredUrl, archived } = payload;
+
+    if (workspace.plan === "free" && expiredUrl) {
+      throw new DubApiError({
+        code: "forbidden",
+        message:
+          "You can only use Default Expiration URLs on a Pro plan and above. Upgrade to Pro to use these features.",
+      });
+    }
+
+    const domainUpdated =
+      newDomain && newDomain.toLowerCase() !== domain.toLowerCase();
+
+    if (domainUpdated) {
       const validDomain = await validateDomain(newDomain);
-      if (validDomain !== true) {
+      if (validDomain.error && validDomain.code) {
         throw new DubApiError({
-          code: "unprocessable_entity",
-          message: validDomain,
+          code: validDomain.code,
+          message: validDomain.error,
         });
       }
       const vercelResponse = await addDomainToVercel(newDomain);
@@ -81,45 +70,56 @@ export const PATCH = withWorkspace(
       }
     }
 
-    const response = await prisma.domain.update({
+    const domainRecord = await prisma.domain.update({
       where: {
         slug: domain,
       },
       data: {
-        slug: newDomain,
-        type,
         archived,
+        ...(domainUpdated && { slug: newDomain }),
         ...(placeholder && { placeholder }),
-        ...(workspace.plan !== "free" && {
-          target,
+        ...(workspace.plan != "free" && {
           expiredUrl,
-          noindex: noindex === undefined ? true : noindex,
         }),
       },
     });
 
     waitUntil(
-      Promise.all([
-        setRootDomain({
-          id: response.id,
-          domain,
-          domainCreatedAt: response.createdAt,
-          ...(workspace.plan !== "free" && {
-            url: target || undefined,
-            noindex: noindex === undefined ? true : noindex,
-          }),
-          rewrite: type === "rewrite",
-          ...(newDomain !== domain && {
-            newDomain,
-          }),
-          projectId: workspace.id,
-        }),
-        // remove old domain from Vercel
-        newDomain !== domain && removeDomainFromVercel(domain),
-      ]),
+      (async () => {
+        if (domainUpdated) {
+          await Promise.all([
+            // remove old domain from Vercel
+            removeDomainFromVercel(domain),
+            // rename redis key
+            redis.rename(domain.toLowerCase(), newDomain.toLowerCase()),
+          ]);
+
+          const allLinks = await prisma.link.findMany({
+            where: {
+              domain: newDomain,
+            },
+            include: {
+              tags: true,
+            },
+          });
+
+          // update all links in Tinybird
+          recordLink(
+            allLinks.map((link) => ({
+              link_id: link.id,
+              domain: link.domain,
+              key: link.key,
+              url: link.url,
+              tag_ids: link.tags.map((tag) => tag.tagId),
+              workspace_id: link.projectId,
+              created_at: link.createdAt,
+            })),
+          );
+        }
+      })(),
     );
 
-    return NextResponse.json(DomainSchema.parse(response));
+    return NextResponse.json(DomainSchema.parse(domainRecord));
   },
   {
     domainChecks: true,

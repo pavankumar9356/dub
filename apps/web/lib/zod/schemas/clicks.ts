@@ -24,4 +24,23 @@ export const clickEventSchemaTB = z.object({
   bot: z.number().nullable(),
   referer: z.string().nullable(),
   referer_url: z.string().nullable(),
+  ip: z.string().nullable(),
+  qr: z.number().nullable(),
+});
+
+export const clickEventEnrichedSchema = z.object({
+  timestamp: z.string(),
+  click_id: z.string(),
+  link_id: z.string(),
+  domain: z.string(),
+  key: z.string(),
+  url: z.string(),
+  country: z.string().nullable(),
+  city: z.string().nullable(),
+  device: z.string().nullable(),
+  browser: z.string().nullable(),
+  os: z.string().nullable(),
+  referer: z.string().nullable(),
+  ip: z.string().nullable(),
+  qr: z.number().nullable(),
 });

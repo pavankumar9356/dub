@@ -20,13 +20,11 @@ export async function recordClick({
   linkId,
   clickId,
   url,
-  root,
 }: {
   req: NextRequest;
   linkId: string;
   clickId?: string;
   url?: string;
-  root?: boolean;
 }) {
   const isBot = detectBot(req);
   if (isBot) {
@@ -38,14 +36,12 @@ export async function recordClick({
   const referer = req.headers.get("referer");
   const ip = process.env.VERCEL === "1" ? ipAddress(req) : LOCALHOST_IP;
   const identity_hash = await getIdentityHash(req);
-  // if in production / preview env, deduplicate clicks from the same IP address + link ID – only record 1 click per hour
-  if (process.env.VERCEL === "1") {
-    const { success } = await ratelimit(2, "1 h").limit(
-      `recordClick:${ip}:${linkId}`,
-    );
-    if (!success) {
-      return null;
-    }
+  // deduplicate clicks from the same IP address + link ID – only record 1 click per hour
+  const { success } = await ratelimit(1, "1 h").limit(
+    `recordClick:${ip}:${linkId}`,
+  );
+  if (!success) {
+    return null;
   }
 
   return await Promise.allSettled([
@@ -97,31 +93,17 @@ export async function recordClick({
       },
     ).then((res) => res.json()),
 
-    // increment the click count for the link or domain (based on their ID)
-    // also increment the usage count for the workspace
+    // increment the click count for the link (based on their ID)
+    conn.execute(
+      "UPDATE Link SET clicks = clicks + 1, lastClicked = NOW() WHERE id = ?",
+      [linkId],
+    ),
+    // if the link has a destination URL, increment the usage count for the workspace
     // and then we have a cron that will reset it at the start of new billing cycle
-    root
-      ? [
-          conn.execute(
-            "UPDATE Domain SET clicks = clicks + 1, lastClicked = NOW() WHERE id = ?",
-            [linkId],
-          ),
-          // only increment workspace clicks if there is a destination URL configured (not placeholder landing page)
-          url &&
-            conn.execute(
-              "UPDATE Project p JOIN Domain d ON p.id = d.projectId SET p.usage = p.usage + 1 WHERE d.id = ?",
-              [linkId],
-            ),
-        ]
-      : [
-          conn.execute(
-            "UPDATE Link SET clicks = clicks + 1, lastClicked = NOW() WHERE id = ?",
-            [linkId],
-          ),
-          conn.execute(
-            "UPDATE Project p JOIN Link l ON p.id = l.projectId SET p.usage = p.usage + 1 WHERE l.id = ?",
-            [linkId],
-          ),
-        ],
+    url &&
+      conn.execute(
+        "UPDATE Project p JOIN Link l ON p.id = l.projectId SET p.usage = p.usage + 1 WHERE l.id = ?",
+        [linkId],
+      ),
   ]);
 }

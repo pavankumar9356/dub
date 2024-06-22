@@ -9,6 +9,7 @@ export * from "./button";
 export * from "./checkbox";
 export * from "./date-picker";
 export * from "./file-upload";
+export * from "./filter";
 export * from "./form";
 export * from "./input-select";
 export * from "./label";
@@ -35,6 +36,7 @@ export * from "./nav-mobile";
 export * from "./content";
 
 // misc
+export * from "./animated-size-container";
 export * from "./blur-image";
 export * from "./client-only";
 export * from "./copy-button";

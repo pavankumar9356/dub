@@ -14,6 +14,7 @@ import {
 } from "@dub/utils";
 import { Link as LinkProps } from "@prisma/client";
 import { waitUntil } from "@vercel/functions";
+import { isBetaTester } from "../edge-config";
 import { hashToken } from "./hash-token";
 import { Session, getSession } from "./utils";
 
@@ -57,7 +58,8 @@ export const withWorkspace = (
     allowAnonymous, // special case for /api/links (POST /api/links) – allow no session
     allowSelf, // special case for removing yourself from a workspace
     skipLinkChecks, // special case for /api/links/exists – skip link checks
-    domainChecks,
+    domainChecks, // if the action needs to check if the domain belongs to the workspace
+    betaFeature, // if the action is a beta feature
   }: {
     requiredPlan?: Array<PlanProps>;
     requiredRole?: Array<"owner" | "member">;
@@ -67,6 +69,7 @@ export const withWorkspace = (
     allowSelf?: boolean;
     skipLinkChecks?: boolean;
     domainChecks?: boolean;
+    betaFeature?: boolean;
   } = {},
 ) => {
   return async (
@@ -220,6 +223,7 @@ export const withWorkspace = (
             },
             domains: {
               select: {
+                id: true,
                 slug: true,
                 primary: true,
               },
@@ -239,22 +243,16 @@ export const withWorkspace = (
                   : { id: linkId }),
               },
             })
-          : domain &&
-            key &&
-            (key === "_root"
-              ? prisma.domain.findUnique({
-                  where: {
-                    slug: domain,
+          : domain && key
+            ? prisma.link.findUnique({
+                where: {
+                  domain_key: {
+                    domain,
+                    key,
                   },
-                })
-              : prisma.link.findUnique({
-                  where: {
-                    domain_key: {
-                      domain,
-                      key,
-                    },
-                  },
-                })),
+                },
+              })
+            : undefined,
       ])) as [WorkspaceProps, LinkProps | undefined];
 
       if (!workspace || !workspace.users) {
@@ -263,6 +261,17 @@ export const withWorkspace = (
           code: "not_found",
           message: "Workspace not found.",
         });
+      }
+
+      // beta feature checks
+      if (betaFeature) {
+        const betaTester = await isBetaTester(workspace.id);
+        if (!betaTester) {
+          throw new DubApiError({
+            code: "forbidden",
+            message: "Unauthorized: Beta feature.",
+          });
+        }
       }
 
       // edge case where linkId is an externalId and workspaceId was not provided (they must've used projectSlug instead)
@@ -390,24 +399,6 @@ export const withWorkspace = (
 
       // link checks (if linkId or domain and key are provided)
       if ((linkId || (domain && key && key !== "_root")) && !skipLinkChecks) {
-        // special case for getting domain by ID
-        // TODO: refactor domains to use the same logic as links
-        if (!link && searchParams.checkDomain === "true") {
-          const domain = await prisma.domain.findUnique({
-            where: {
-              id: linkId,
-            },
-          });
-          if (domain) {
-            link = {
-              ...domain,
-              domain: domain.slug,
-              key: "_root",
-              url: domain.target || "",
-            } as unknown as LinkProps;
-          }
-        }
-
         // make sure the link is owned by the workspace
         if (!link || link.projectId !== workspace?.id) {
           throw new DubApiError({

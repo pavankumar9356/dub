@@ -1,3 +1,4 @@
+import { CompositeAnalyticsResponseOptions } from "@/lib/analytics/types";
 import useDomains from "@/lib/swr/use-domains";
 import useWorkspace from "@/lib/swr/use-workspace";
 import { LinkWithTagsProps, TagProps, UserProps } from "@/lib/types";
@@ -6,14 +7,14 @@ import { useAddEditLinkModal } from "@/ui/modals/add-edit-link-modal";
 import { useArchiveLinkModal } from "@/ui/modals/archive-link-modal";
 import { useDeleteLinkModal } from "@/ui/modals/delete-link-modal";
 import { useLinkQRModal } from "@/ui/modals/link-qr-modal";
-import { Chart, CheckCircleFill, Delete, ThreeDots } from "@/ui/shared/icons";
+import { CheckCircleFill, Delete, ThreeDots } from "@/ui/shared/icons";
 import {
   Avatar,
   BadgeTooltip,
   Button,
   CopyButton,
   IconMenu,
-  Magic,
+  LinkLogo,
   NumberTooltip,
   Popover,
   SimpleTooltipContent,
@@ -22,6 +23,7 @@ import {
   useIntersectionObserver,
   useRouterStuff,
 } from "@dub/ui";
+import { Crosshairs, CursorRays, InvoiceDollar } from "@dub/ui/src/icons";
 import { LinkifyTooltipContent } from "@dub/ui/src/tooltip";
 import {
   cn,
@@ -30,6 +32,7 @@ import {
   isDubDomain,
   linkConstructor,
   nFormatter,
+  nanoid,
   punycode,
   timeAgo,
 } from "@dub/utils";
@@ -37,7 +40,6 @@ import {
   Archive,
   Copy,
   CopyPlus,
-  CreditCard,
   Edit3,
   EyeOff,
   FolderInput,
@@ -53,7 +55,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import useSWR, { mutate } from "swr";
 import { useTransferLinkModal } from "../modals/transfer-link-modal";
-import LinkLogo from "./link-logo";
 
 export default function LinkCard({
   props,
@@ -117,20 +118,21 @@ export default function LinkCard({
   const entry = useIntersectionObserver(linkRef, {});
   const isVisible = !!entry?.isIntersecting;
 
-  const { data: clicks } = useSWR<number>(
-    // only fetch clicks if the link is visible and there's a slug and the usage is not exceeded
+  const { data: totalEvents } = useSWR<{
+    [key in CompositeAnalyticsResponseOptions]?: number;
+  }>(
+    // only fetch data if the link is visible and there's a slug and the usage is not exceeded
     isVisible &&
       workspaceId &&
       !exceededClicks &&
-      `/api/analytics/clicks?workspaceId=${workspaceId}&linkId=${id}&interval=all&`,
-    (url) =>
-      fetcher(url, {
-        headers: {
-          "Request-Source": "app.dub.co",
-        },
-      }),
+      `/api/analytics?event=composite&workspaceId=${workspaceId}&linkId=${id}&interval=all_unfiltered`,
+    fetcher,
     {
-      fallbackData: props.clicks,
+      fallbackData: {
+        clicks: props.clicks,
+        leads: props.leads,
+        sales: props.sales,
+      },
       dedupingInterval: 60000,
     },
   );
@@ -157,7 +159,7 @@ export default function LinkCard({
     // @ts-expect-error
     duplicateProps: {
       ...propsToDuplicate,
-      key: `${punycode(key)}-copy`,
+      key: key === "_root" ? nanoid(7) : `${punycode(key)}-copy`,
       clicks: 0,
     },
   });
@@ -184,7 +186,7 @@ export default function LinkCard({
     }
   }, [selected]);
 
-  const handlClickOnLinkCard = (e: any) => {
+  const handleClickOnLinkCard = (e: any) => {
     // Check if the clicked element is a linkRef or one of its descendants
     const isLinkCardClick =
       linkRef.current && linkRef.current.contains(e.target);
@@ -203,12 +205,12 @@ export default function LinkCard({
 
   useEffect(() => {
     if (isVisible) {
-      document.addEventListener("click", handlClickOnLinkCard);
+      document.addEventListener("click", handleClickOnLinkCard);
     }
     return () => {
-      document.removeEventListener("click", handlClickOnLinkCard);
+      document.removeEventListener("click", handleClickOnLinkCard);
     };
-  }, [handlClickOnLinkCard]);
+  }, [handleClickOnLinkCard]);
 
   const [copiedLinkId, setCopiedLinkId] = useState(false);
 
@@ -459,14 +461,18 @@ export default function LinkCard({
                   <Lock className="xs:block hidden h-4 w-4 text-gray-500" />
                 </Tooltip>
               )}
-              <a
-                href={url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="xs:block hidden max-w-[140px] truncate text-sm font-medium text-gray-700 underline-offset-2 hover:underline sm:max-w-[300px] md:max-w-[360px] xl:max-w-[420px]"
-              >
-                {url}
-              </a>
+              {url ? (
+                <a
+                  href={url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="xs:block hidden max-w-[140px] truncate text-sm font-medium text-gray-700 underline-offset-2 hover:underline sm:max-w-[300px] md:max-w-[360px] xl:max-w-[420px]"
+                >
+                  {url}
+                </a>
+              ) : (
+                <p className="text-sm text-gray-400">No URL configured</p>
+              )}
             </div>
           </div>
         </div>
@@ -475,32 +481,39 @@ export default function LinkCard({
           {trackConversion ? (
             <Link
               href={`/${slug}/analytics?domain=${domain}&key=${key}`}
-              className="flex items-center space-x-2 rounded-md bg-gray-100 px-2 hover:bg-gray-200/75"
+              className="flex items-center space-x-3 rounded-md border border-gray-200 bg-gray-50 px-3 py-1 transition-colors hover:bg-gray-100"
             >
-              <div className="flex items-center space-x-1 p-0.5">
-                <Chart className="h-4 w-4 text-gray-700" />
+              <div className="flex items-center space-x-1">
+                <CursorRays className="h-4 w-4 text-gray-700" />
                 <p className="whitespace-nowrap text-sm text-gray-500">
-                  {nFormatter(clicks)}
+                  {nFormatter(totalEvents?.clicks)}
                 </p>
               </div>
-              <div className="flex items-center space-x-1 p-0.5">
-                <Magic className="h-4 w-4 text-gray-700" />
-                <p className="whitespace-nowrap text-sm text-gray-500">0</p>
+              <div className="flex items-center space-x-1">
+                <Crosshairs className="h-4 w-4 text-gray-700" />
+                <p className="whitespace-nowrap text-sm text-gray-500">
+                  {nFormatter(totalEvents?.leads)}
+                </p>
               </div>
-              <div className="flex items-center space-x-1 p-0.5">
-                <CreditCard className="h-4 w-4 text-gray-700" />
-                <p className="whitespace-nowrap text-sm text-gray-500">0</p>
+              <div className="flex items-center space-x-1">
+                <InvoiceDollar className="h-4 w-4 text-gray-700" />
+                <p className="whitespace-nowrap text-sm text-gray-500">
+                  {nFormatter(totalEvents?.sales)}
+                </p>
               </div>
             </Link>
           ) : (
-            <NumberTooltip value={clicks} lastClicked={lastClicked}>
+            <NumberTooltip
+              value={totalEvents?.clicks}
+              lastClicked={lastClicked}
+            >
               <Link
                 href={`/${slug}/analytics?domain=${domain}&key=${key}`}
-                className="flex items-center space-x-1 rounded-md bg-gray-100 px-2 py-0.5 hover:bg-gray-200/75"
+                className="flex items-center space-x-1 rounded-md border border-gray-200 bg-gray-50 px-3 py-1 transition-colors hover:bg-gray-100"
               >
-                <Chart className="h-4 w-4 text-gray-700" />
+                <CursorRays className="h-4 w-4 text-gray-700" />
                 <p className="whitespace-nowrap text-sm text-gray-500">
-                  {nFormatter(clicks)}
+                  {nFormatter(totalEvents?.clicks)}
                   <span className="ml-1 hidden sm:inline-block">clicks</span>
                 </p>
               </Link>
@@ -591,17 +604,19 @@ export default function LinkCard({
                       ),
                     })}
                   />
-                  <Button
-                    text="Delete"
-                    variant="danger-outline"
-                    onClick={() => {
-                      setOpenPopover(false);
-                      setShowDeleteLinkModal(true);
-                    }}
-                    icon={<Delete className="h-4 w-4" />}
-                    shortcut="X"
-                    className="h-9 px-2 font-medium"
-                  />
+                  {key !== "_root" && (
+                    <Button
+                      text="Delete"
+                      variant="danger-outline"
+                      onClick={() => {
+                        setOpenPopover(false);
+                        setShowDeleteLinkModal(true);
+                      }}
+                      icon={<Delete className="h-4 w-4" />}
+                      shortcut="X"
+                      className="h-9 px-2 font-medium"
+                    />
+                  )}
                   {!slug && ( // this is only shown in admin mode (where there's no slug)
                     <button
                       onClick={() => {

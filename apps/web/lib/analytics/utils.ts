@@ -1,31 +1,22 @@
 import { getDaysDifference } from "@dub/utils";
+import { json2csv } from "json-2-csv";
 import { DubApiError } from "../api/errors";
 
-export const formatAnalyticsEndpoint = (
-  endpoint: string,
-  type: "plural" | "singular",
+export const editQueryString = (
+  queryString: string,
+  data: Record<string, string>,
+  del?: string | string[],
 ) => {
-  const plural = {
-    country: "countries",
-    city: "cities",
-    device: "devices",
-    browser: "browsers",
-    referer: "referers",
-  };
+  const searchParams = new URLSearchParams(queryString);
 
-  const singular = {
-    countries: "country",
-    cities: "city",
-    devices: "device",
-    browsers: "browser",
-    referers: "referer",
-  };
-
-  if (type === "plural") {
-    return plural[endpoint] || endpoint;
-  } else if (type === "singular") {
-    return singular[endpoint] || endpoint;
+  for (const key in data) {
+    searchParams.set(key, data[key]);
   }
+
+  if (del)
+    (Array.isArray(del) ? del : [del]).forEach((d) => searchParams.delete(d));
+
+  return searchParams.toString();
 };
 
 export const validDateRangeForPlan = ({
@@ -83,4 +74,15 @@ export const validDateRangeForPlan = ({
   }
 
   return true;
+};
+
+export const convertToCSV = (data: object[]) => {
+  return json2csv(data, {
+    parseValue(fieldValue, defaultParser) {
+      if (fieldValue instanceof Date) {
+        return fieldValue.toISOString();
+      }
+      return defaultParser(fieldValue);
+    },
+  });
 };
